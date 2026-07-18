@@ -45,19 +45,17 @@ pub enum Error {
 }
 
 impl<F: Field> Scheme<F> {
-    /// Deals a fresh random secret into `participants` shares, `threshold` of
-    /// which are needed to reconstruct it.
+    /// Generates a fresh random secret and deals it into `participants` shares,
+    /// `threshold` of which are needed to reconstruct it.
     ///
     /// The secret is the constant term of a random degree-`threshold - 1`
     /// polynomial and is exposed via [`Self::secret`] for setup/key-generation use.
-    pub fn new<R>(
+    /// To share a secret that already exists, use [`Self::split`] instead.
+    pub fn generate<R: Rng>(
         participants: NonZeroUsize,
         threshold: NonZeroUsize,
         rng: &mut R,
-    ) -> Result<Self, Error>
-    where
-        R: Rng,
-    {
+    ) -> Result<Self, Error> {
         if threshold > participants {
             return Err(Error::ThresholdExceedsParticipants { participants, threshold });
         }
@@ -65,16 +63,46 @@ impl<F: Field> Scheme<F> {
         // A degree `threshold - 1` polynomial is uniquely determined by `threshold`
         // points, so exactly that many shares are needed to recover it.
         let poly = DensePolynomial::<F>::rand(threshold.get() - 1, rng);
-        let secret = poly.evaluate(&F::ZERO);
 
-        // Evaluate at x = 1..=participants; x = 0 is skipped as it is the secret.
-        let mut shares = Vec::with_capacity(participants.get());
-        (0..participants.get()).into_iter().map(|idx| F::from(idx as u64 + 1)).for_each(|x| {
-            let y = poly.evaluate(&x);
-            shares.push(Share { x, y });
-        });
+        let secret = poly.evaluate(&F::ZERO);
+        let shares = Self::create_shares(&poly, participants);
 
         Ok(Self { secret, shares, threshold })
+    }
+
+    /// Splits an existing `secret` into `participants` shares, `threshold` of
+    /// which are needed to reconstruct it.
+    ///
+    /// The secret is placed as the constant term of a degree-`threshold - 1`
+    /// polynomial whose remaining coefficients are random, so any `threshold - 1`
+    /// shares reveal nothing about it. Use this when the secret already exists
+    /// (e.g. an existing key to distribute); use [`Self::generate`] to deal a fresh one.
+    pub fn split<R: Rng>(
+        secret: F,
+        participants: NonZeroUsize,
+        threshold: NonZeroUsize,
+        rng: &mut R,
+    ) -> Result<Self, Error> {
+        if threshold > participants {
+            return Err(Error::ThresholdExceedsParticipants { participants, threshold });
+        }
+
+        let mut poly = DensePolynomial::<F>::rand(threshold.get() - 1, rng);
+        // Safe: contains at least secret as first coefficient.
+        *poly.coeffs.first_mut().unwrap() = secret;
+
+        let shares = Self::create_shares(&poly, participants);
+        Ok(Self { secret, shares, threshold })
+    }
+
+    // Evaluate at x = 1..=participants; x = 0 is skipped as it is the secret.
+    fn create_shares(poly: &DensePolynomial<F>, participants: NonZeroUsize) -> Vec<Share<F>> {
+        (0..participants.get())
+            .map(|idx| {
+                let x = F::from(idx as u64 + 1);
+                Share { x, y: poly.evaluate(&x) }
+            })
+            .collect()
     }
 
     /// Recovers the secret `f(0)` from `shares` via Lagrange interpolation.
@@ -121,7 +149,7 @@ mod tests {
 
     /// Builds a 5-participants, 3-threshold scheme over BLS12-381's base field.
     fn test_scheme() -> Scheme<ark_bls12_381::Fq> {
-        Scheme::new(NonZeroUsize::new(5).unwrap(), NonZeroUsize::new(3).unwrap(), &mut test_rng())
+        Scheme::generate(NonZeroUsize::new(5).unwrap(), NonZeroUsize::new(3).unwrap(), &mut test_rng())
             .unwrap()
     }
 
@@ -145,10 +173,7 @@ mod tests {
     fn reconstruct_rejects_insufficient_shares() {
         let scheme = test_scheme();
         let shares = scheme.shares.clone().into_iter().take(2).collect::<Vec<_>>();
-        assert!(matches!(
-            scheme.reconstruct(&shares),
-            Err(Error::InsufficientShares { .. })
-        ));
+        assert!(matches!(scheme.reconstruct(&shares), Err(Error::InsufficientShares { .. })));
     }
 
     #[test]
@@ -157,5 +182,21 @@ mod tests {
         // Same share repeated to satisfy the count check but with duplicate x-coordinates.
         let shares = vec![scheme.shares[0], scheme.shares[1], scheme.shares[1]];
         assert!(matches!(scheme.reconstruct(&shares), Err(Error::DuplicateShares)));
+    }
+
+    #[test]
+    fn split_preserves_secret() {
+        let secret = ark_bls12_381::Fq::from(42u64);
+        let scheme = Scheme::split(
+            secret,
+            NonZeroUsize::new(5).unwrap(),
+            NonZeroUsize::new(3).unwrap(),
+            &mut test_rng(),
+        )
+        .unwrap();
+        // The given secret must sit at f(0) and survive a reconstruction round-trip.
+        assert_eq!(scheme.secret, secret);
+        let shares = vec![scheme.shares[0], scheme.shares[2], scheme.shares[4]];
+        assert_eq!(secret, scheme.reconstruct(&shares).unwrap());
     }
 }
