@@ -1,19 +1,28 @@
+//! Shamir's Secret Sharing over an arbitrary prime field.
+//!
+//! A secret `s` is encoded as the constant term of a random degree-`t-1`
+//! polynomial `f`, where `t` is the threshold. Each participant `i` receives the
+//! share `(x_i, f(x_i))`. Any `t` distinct shares recover `s = f(0)` via Lagrange
+//! interpolation, while any `t-1` shares reveal nothing about it.
+
 use ark_ff::Field;
 use ark_poly::{DenseUVPolynomial, Polynomial, univariate::DensePolynomial};
 use ark_std::rand::Rng;
 use core::num::NonZeroUsize;
 
-/// Shamir's secret splitting scheme.
+/// A dealt Shamir scheme: the secret together with the shares handed to participants.
 pub struct Scheme<F: Field> {
-    /// Polynomial value at `0`.
+    /// The secret, i.e. the polynomial's constant term `f(0)`.
     pub secret: F,
-    /// Polynomial evaluations at `1..participants + 1` points.
+    /// One share per participant, evaluated at `x = 1..=participants`.
     pub shares: Vec<Share<F>>,
-    /// Scheme's threshold value.
+    /// Minimum number of distinct shares required to reconstruct [`Self::secret`].
     threshold: NonZeroUsize,
 }
 
-/// Participant's secret info: `y = f(x)`.
+/// A single participant's share: the point `(x, y)` where `y = f(x)`.
+///
+/// Note that `x` must never be `0` — that point is the secret itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Share<F: Field> {
     pub x: F,
@@ -22,24 +31,25 @@ pub struct Share<F: Field> {
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum Error {
-    #[error(
-        "threshold number exceeds participants: threshold={threshold}, participants={participants}"
-    )]
+    /// A scheme cannot require more shares than it hands out.
+    #[error("threshold {threshold} exceeds participants {participants}")]
     ThresholdExceedsParticipants { participants: NonZeroUsize, threshold: NonZeroUsize },
 
-    #[error(
-        "insufficient amount of shares to reconstruct secret: shares={shares}, threshold={threshold}"
-    )]
-    InsufficientNumberOfSharesToReconstructSecret { shares: usize, threshold: NonZeroUsize },
+    /// Fewer than `threshold` shares were supplied to [`Scheme::reconstruct`].
+    #[error("insufficient shares: got {shares}, need at least {threshold}")]
+    InsufficientShares { shares: usize, threshold: NonZeroUsize },
 
+    /// Two or more shares share an `x`-coordinate, which is not a valid input set.
     #[error("shares contain duplicate x-coordinates")]
-    DuplicateShareX,
+    DuplicateShares,
 }
 
 impl<F: Field> Scheme<F> {
-    /// Creates new [`Scheme`] with provided:
-    /// - `threshold` - the minimum number of shares to reconstruct a secret
-    /// - `participants` - the number of participants to generate shares for.
+    /// Deals a fresh random secret into `participants` shares, `threshold` of
+    /// which are needed to reconstruct it.
+    ///
+    /// The secret is the constant term of a random degree-`threshold - 1`
+    /// polynomial and is exposed via [`Self::secret`] for setup/key-generation use.
     pub fn new<R>(
         participants: NonZeroUsize,
         threshold: NonZeroUsize,
@@ -52,10 +62,12 @@ impl<F: Field> Scheme<F> {
             return Err(Error::ThresholdExceedsParticipants { participants, threshold });
         }
 
-        // Polynomial degree `threshold - 1` allows `threshold` participants reconstruct a secret.
+        // A degree `threshold - 1` polynomial is uniquely determined by `threshold`
+        // points, so exactly that many shares are needed to recover it.
         let poly = DensePolynomial::<F>::rand(threshold.get() - 1, rng);
         let secret = poly.evaluate(&F::ZERO);
 
+        // Evaluate at x = 1..=participants; x = 0 is skipped as it is the secret.
         let mut shares = Vec::with_capacity(participants.get());
         (0..participants.get()).into_iter().map(|idx| F::from(idx as u64 + 1)).for_each(|x| {
             let y = poly.evaluate(&x);
@@ -65,10 +77,14 @@ impl<F: Field> Scheme<F> {
         Ok(Self { secret, shares, threshold })
     }
 
-    /// Reconstructs the secret using provided shares.
+    /// Recovers the secret `f(0)` from `shares` via Lagrange interpolation.
+    ///
+    /// Any `threshold` shares with distinct `x`-coordinates suffice; supplying
+    /// more is harmless. The shares are trusted to lie on the original polynomial —
+    /// this is plain reconstruction, not verifiable secret sharing.
     pub fn reconstruct(&self, shares: &[Share<F>]) -> Result<F, Error> {
         if shares.len() < self.threshold.get() {
-            return Err(Error::InsufficientNumberOfSharesToReconstructSecret {
+            return Err(Error::InsufficientShares {
                 shares: shares.len(),
                 threshold: self.threshold,
             });
@@ -78,20 +94,20 @@ impl<F: Field> Scheme<F> {
         // (`x_m - x_j == 0`) during interpolation, which would panic on inversion.
         for (j, Share { x: x_j, .. }) in shares.iter().enumerate() {
             if shares[j + 1..].iter().any(|Share { x: x_m, .. }| x_m == x_j) {
-                return Err(Error::DuplicateShareX);
+                return Err(Error::DuplicateShares);
             }
         }
 
+        // secret = f(0) = Σ_j y_j · Π_{m≠j} x_m / (x_m - x_j), the Lagrange basis at x = 0.
         let mut secret = F::ZERO;
         shares.iter().enumerate().for_each(|(j, Share { x: x_j, y: y_j })| {
-            let mut product = F::ONE;
+            let mut basis = F::ONE;
             shares.iter().enumerate().for_each(|(m, Share { x: x_m, .. })| {
                 if m != j {
-                    let rhs = x_m.div(*x_m - *x_j);
-                    product = product.mul(rhs);
+                    basis *= *x_m / (*x_m - *x_j);
                 }
             });
-            secret = secret.add(y_j.mul(product));
+            secret += *y_j * basis;
         });
 
         Ok(secret)
@@ -131,7 +147,7 @@ mod tests {
         let shares = scheme.shares.clone().into_iter().take(2).collect::<Vec<_>>();
         assert!(matches!(
             scheme.reconstruct(&shares),
-            Err(Error::InsufficientNumberOfSharesToReconstructSecret { .. })
+            Err(Error::InsufficientShares { .. })
         ));
     }
 
@@ -140,6 +156,6 @@ mod tests {
         let scheme = test_scheme();
         // Same share repeated to satisfy the count check but with duplicate x-coordinates.
         let shares = vec![scheme.shares[0], scheme.shares[1], scheme.shares[1]];
-        assert!(matches!(scheme.reconstruct(&shares), Err(Error::DuplicateShareX)));
+        assert!(matches!(scheme.reconstruct(&shares), Err(Error::DuplicateShares)));
     }
 }
