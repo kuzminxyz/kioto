@@ -149,8 +149,12 @@ mod tests {
 
     /// Builds a 5-participants, 3-threshold scheme over BLS12-381's base field.
     fn test_scheme() -> Scheme<ark_bls12_381::Fq> {
-        Scheme::generate(NonZeroUsize::new(5).unwrap(), NonZeroUsize::new(3).unwrap(), &mut test_rng())
-            .unwrap()
+        Scheme::generate(
+            NonZeroUsize::new(5).unwrap(),
+            NonZeroUsize::new(3).unwrap(),
+            &mut test_rng(),
+        )
+        .unwrap()
     }
 
     #[test]
