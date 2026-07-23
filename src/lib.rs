@@ -10,4 +10,4 @@
 mod shamir;
 pub use shamir::{Error, Scheme, Share};
 
-mod tpke;
+pub mod tpke;
