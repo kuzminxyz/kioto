@@ -9,20 +9,20 @@ use ark_ff::UniformRand;
 use ark_serialize::SerializationError;
 use ark_std::rand::{CryptoRng, Rng};
 
-use super::PairingExt;
-use super::utils;
+use super::{PairingExt, utils, DOMAIN};
 
-const DOMAIN: &str = "KEK";
 
-/// Encryption key is a secret scalar from [Scheme::secret]
-/// multiplied by croup generator point.
+/// Public key of the threshold scheme, shared by encryption and decryption.
+///
+/// It is the group generator point multiplied by the scheme secret scalar
+/// from [Scheme::secret]. The scalar itself is never part of this type.
 ///
 /// [Scheme::secret]: crate::shamir::Scheme::secret
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EncryptionKey<Group: CurveGroup>(pub Group::Affine);
+pub struct ThresholdPublicKey<Group: CurveGroup>(pub Group::Affine);
 
-impl<Group: CurveGroup> EncryptionKey<Group> {
-    /// Creates new encryption new from provided scalar.
+impl<Group: CurveGroup> ThresholdPublicKey<Group> {
+    /// Creates new public key from provided scalar.
     pub fn from_scalar(scalar: Group::Scalar) -> Self {
         Self(<Group as PrimeGroup>::generator().mul(scalar).into_affine())
     }
@@ -50,18 +50,18 @@ pub enum Error {
 }
 
 pub struct Encryptor<CRV: PairingExt> {
-    /// Encryption key.
-    key: EncryptionKey<CRV::G2>,
+    /// Threshold scheme public key.
+    key: ThresholdPublicKey<CRV::G2>,
 }
 
 impl<CRV: PairingExt> Encryptor<CRV> {
-    /// Creates new [`Encryptor`] with provided encryption public key.
-    pub fn new(encryption_key: EncryptionKey<CRV::G2>) -> Self {
-        Self { key: encryption_key }
+    /// Creates new [`Encryptor`] with provided scheme public key.
+    pub fn new(public_key: ThresholdPublicKey<CRV::G2>) -> Self {
+        Self { key: public_key }
     }
 
-    /// Returns encryption key used to encrypt message.
-    pub fn encryption_key(&self) -> EncryptionKey<CRV::G2> {
+    /// Returns public key used to encrypt message.
+    pub fn public_key(&self) -> ThresholdPublicKey<CRV::G2> {
         self.key
     }
 
