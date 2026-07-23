@@ -7,7 +7,7 @@
 
 use ark_ff::Field;
 use ark_poly::{DenseUVPolynomial, Polynomial, univariate::DensePolynomial};
-use ark_std::rand::Rng;
+use ark_std::rand::{CryptoRng, Rng};
 use core::num::NonZeroUsize;
 
 /// A dealt Shamir scheme: the secret together with the shares handed to participants.
@@ -25,10 +25,14 @@ pub struct Scheme<F: Field> {
 /// Note that `x` must never be `0` — that point is the secret itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Share<F: Field> {
+    /// Public participant's X coordinate in which polynomial was evaluated.
     pub x: F,
+    /// Private participant's Y coordinate, the evaluation value.
     pub y: F,
 }
 
+/// Error may occur in Smamir's secret splitting scheme.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum Error {
     /// A scheme cannot require more shares than it hands out.
@@ -51,7 +55,7 @@ impl<F: Field> Scheme<F> {
     /// The secret is the constant term of a random degree-`threshold - 1`
     /// polynomial and is exposed via [`Self::secret`] for setup/key-generation use.
     /// To share a secret that already exists, use [`Self::split`] instead.
-    pub fn generate<R: Rng>(
+    pub fn generate<R: Rng + CryptoRng>(
         participants: NonZeroUsize,
         threshold: NonZeroUsize,
         rng: &mut R,
@@ -77,7 +81,7 @@ impl<F: Field> Scheme<F> {
     /// polynomial whose remaining coefficients are random, so any `threshold - 1`
     /// shares reveal nothing about it. Use this when the secret already exists
     /// (e.g. an existing key to distribute); use [`Self::generate`] to deal a fresh one.
-    pub fn split<R: Rng>(
+    pub fn split<R: Rng + CryptoRng>(
         secret: F,
         participants: NonZeroUsize,
         threshold: NonZeroUsize,
