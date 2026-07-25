@@ -9,8 +9,7 @@ use ark_ff::UniformRand;
 use ark_serialize::SerializationError;
 use ark_std::rand::{CryptoRng, Rng};
 
-use super::{PairingExt, utils, DOMAIN};
-
+use super::{DOMAIN, PairingExt, utils};
 
 /// Public key of the threshold scheme, shared by encryption and decryption.
 ///
@@ -45,8 +44,8 @@ pub enum Error {
     #[error("arkworks hash-to-curve error: {0}")]
     HashToCurveError(#[from] HashToCurveError),
 
-    #[error("failed to xor two vectors")]
-    XorError,
+    #[error(transparent)]
+    XorError(#[from] XorError)
 }
 
 pub struct Encryptor<CRV: PairingExt> {
@@ -89,16 +88,22 @@ impl<CRV: PairingExt> Encryptor<CRV> {
 
         // Encryption key is a result of
         let symmetric_key_gt = CRV::pairing(h, self.key.0.mul(salt));
-        hide_message(&mut message, &symmetric_key_gt)?;
+        xor_message(&mut message, &symmetric_key_gt)?;
 
         Ok(EncryptionOutput { u, w, ciphertext: message })
     }
 }
 
-fn hide_message<CRV: PairingExt>(
+#[derive(Debug, thiserror::Error)]
+pub enum XorError {
+    #[error("arkworks serialization error: {0}")]
+    Serialization(#[from] SerializationError),
+}
+
+pub(crate) fn xor_message<CRV: PairingExt>(
     message: &mut [u8],
     symmetric_key_gt: &PairingOutput<CRV>,
-) -> Result<(), Error> {
+) -> Result<(), XorError> {
     let serialized_symmetric_key = utils::ark_serialize(&symmetric_key_gt)?;
 
     let mut mask = vec![0u8; message.len()];
