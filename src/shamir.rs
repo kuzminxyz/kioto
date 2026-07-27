@@ -5,10 +5,11 @@
 //! share `(x_i, f(x_i))`. Any `t` distinct shares recover `s = f(0)` via Lagrange
 //! interpolation, while any `t-1` shares reveal nothing about it.
 
+use core::num::NonZeroUsize;
+
 use ark_ff::Field;
 use ark_poly::{DenseUVPolynomial, Polynomial, univariate::DensePolynomial};
-use ark_std::rand::{CryptoRng, Rng};
-use core::num::NonZeroUsize;
+use ark_std::rand::Rng;
 
 /// A dealt Shamir scheme: the secret together with the shares handed to participants.
 pub struct Scheme<F: Field> {
@@ -55,7 +56,9 @@ impl<F: Field> Scheme<F> {
     /// The secret is the constant term of a random degree-`threshold - 1`
     /// polynomial and is exposed via [`Self::secret`] for setup/key-generation use.
     /// To share a secret that already exists, use [`Self::split`] instead.
-    pub fn generate<R: Rng + CryptoRng>(
+    // TODO: restore the `CryptoRng` bound once tests use a cryptographically
+    // secure RNG (ark-std's `test_rng()` is only `Rng`, not `CryptoRng`).
+    pub fn generate<R: Rng>(
         participants: NonZeroUsize,
         threshold: NonZeroUsize,
         rng: &mut R,
@@ -81,7 +84,9 @@ impl<F: Field> Scheme<F> {
     /// polynomial whose remaining coefficients are random, so any `threshold - 1`
     /// shares reveal nothing about it. Use this when the secret already exists
     /// (e.g. an existing key to distribute); use [`Self::generate`] to deal a fresh one.
-    pub fn split<R: Rng + CryptoRng>(
+    // TODO: restore the `CryptoRng` bound once tests use a cryptographically
+    // secure RNG (ark-std's `test_rng()` is only `Rng`, not `CryptoRng`).
+    pub fn split<R: Rng>(
         secret: F,
         participants: NonZeroUsize,
         threshold: NonZeroUsize,
@@ -148,8 +153,9 @@ impl<F: Field> Scheme<F> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ark_std::test_rng;
+
+    use super::*;
 
     /// Builds a 5-participants, 3-threshold scheme over BLS12-381's base field.
     fn test_scheme() -> Scheme<ark_bls12_381::Fq> {

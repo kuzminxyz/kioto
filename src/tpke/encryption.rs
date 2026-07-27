@@ -7,7 +7,7 @@ use ark_ec::{
 };
 use ark_ff::UniformRand;
 use ark_serialize::SerializationError;
-use ark_std::rand::{CryptoRng, Rng};
+use ark_std::rand::Rng;
 
 use super::{DOMAIN, PairingExt, utils};
 
@@ -43,9 +43,6 @@ pub enum Error {
 
     #[error("arkworks hash-to-curve error: {0}")]
     HashToCurveError(#[from] HashToCurveError),
-
-    #[error(transparent)]
-    XorError(#[from] XorError)
 }
 
 pub struct Encryptor<CRV: PairingExt> {
@@ -64,8 +61,10 @@ impl<CRV: PairingExt> Encryptor<CRV> {
         self.key
     }
 
-    /// Enctypt bytes with provided random generator
-    pub fn encrypt<R: Rng + CryptoRng>(
+    /// Encrypt bytes with provided random generator
+    // TODO: restore the `CryptoRng` bound once tests use a cryptographically
+    // secure RNG (ark-std's `test_rng()` is only `Rng`, not `CryptoRng`).
+    pub fn encrypt<R: Rng>(
         &self,
         message: Vec<u8>,
         rng: &mut R,
@@ -94,16 +93,11 @@ impl<CRV: PairingExt> Encryptor<CRV> {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum XorError {
-    #[error("arkworks serialization error: {0}")]
-    Serialization(#[from] SerializationError),
-}
 
 pub(crate) fn xor_message<CRV: PairingExt>(
     message: &mut [u8],
     symmetric_key_gt: &PairingOutput<CRV>,
-) -> Result<(), XorError> {
+) -> Result<(), SerializationError> {
     let serialized_symmetric_key = utils::ark_serialize(&symmetric_key_gt)?;
 
     let mut mask = vec![0u8; message.len()];
@@ -115,4 +109,124 @@ pub(crate) fn xor_message<CRV: PairingExt>(
     // XOR message and mask
     message.iter_mut().zip(mask).for_each(|(d, m)| *d ^= m);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use ark_bls12_381::Fr;
+    use ark_ec::{CurveGroup, hashing::HashToCurve, pairing::Pairing};
+    use ark_ff::UniformRand;
+    use ark_std::test_rng;
+
+    use super::*;
+    use crate::tpke::test_curve::Curve;
+
+    /// Builds an encryptor whose public key is `secret * g2`, returning both so the
+    /// tests can reconstruct the symmetric key the encryptor derives.
+    fn setup() -> (Fr, Encryptor<Curve>) {
+        let mut rng = test_rng();
+        let secret = Fr::rand(&mut rng);
+        let public_key = ThresholdPublicKey::from_scalar(secret);
+        (secret, Encryptor::new(public_key))
+    }
+
+    /// Recomputes the symmetric key the encryptor uses for the given salt:
+    /// `K = e(HashToG1(W), secret * g2 * salt)`.
+    fn symmetric_key(
+        secret: Fr,
+        output: &EncryptionOutput<Curve>,
+        salt: Fr,
+    ) -> PairingOutput<Curve> {
+        let h = <Curve as PairingExt>::MapToG1Hasher::new(DOMAIN.as_bytes())
+            .unwrap()
+            .hash(output.w.as_slice())
+            .unwrap();
+        let g2 = <Curve as Pairing>::G2::generator();
+        Curve::pairing(h, g2.mul(secret * salt).into_affine())
+    }
+
+    #[test]
+    fn public_key_roundtrips_through_encryptor() {
+        let (secret, encryptor) = setup();
+        assert_eq!(encryptor.public_key(), ThresholdPublicKey::from_scalar(secret));
+    }
+
+    #[test]
+    fn encrypt_with_salt_is_deterministic() {
+        let (_secret, encryptor) = setup();
+        let salt = Fr::from(7u64);
+        let message = b"anti-mev payload".to_vec();
+
+        let a = encryptor.encrypt_with_salt(message.clone(), salt).unwrap();
+        let b = encryptor.encrypt_with_salt(message, salt).unwrap();
+
+        assert_eq!(a.u, b.u);
+        assert_eq!(a.w, b.w);
+        assert_eq!(a.ciphertext, b.ciphertext);
+    }
+
+    #[test]
+    fn distinct_salts_produce_distinct_outputs() {
+        let (_secret, encryptor) = setup();
+        let message = b"anti-mev payload".to_vec();
+
+        let a = encryptor.encrypt_with_salt(message.clone(), Fr::from(1u64)).unwrap();
+        let b = encryptor.encrypt_with_salt(message, Fr::from(2u64)).unwrap();
+
+        // `U = salt * g2` and the derived mask both depend on the salt.
+        assert_ne!(a.u, b.u);
+        assert_ne!(a.ciphertext, b.ciphertext);
+    }
+
+    #[test]
+    fn ciphertext_keeps_length_and_commits_to_plaintext_hash() {
+        let (_secret, encryptor) = setup();
+        let message = b"anti-mev payload".to_vec();
+
+        let output = encryptor.encrypt_with_salt(message.clone(), Fr::from(3u64)).unwrap();
+
+        assert_eq!(output.ciphertext.len(), message.len());
+        // `W` is the plaintext hash, independent of the salt.
+        assert_eq!(output.w, blake3::hash(&message));
+        // The stream cipher must not leave the plaintext in the clear.
+        assert_ne!(output.ciphertext, message);
+    }
+
+    #[test]
+    fn encryption_is_invertible_with_matching_key() {
+        let (secret, encryptor) = setup();
+        let salt = Fr::from(11u64);
+        let message = b"anti-mev payload".to_vec();
+
+        let output = encryptor.encrypt_with_salt(message.clone(), salt).unwrap();
+
+        // XORing the ciphertext with the same symmetric key must recover the plaintext.
+        let key = symmetric_key(secret, &output, salt);
+        let mut recovered = output.ciphertext.clone();
+        xor_message::<Curve>(&mut recovered, &key).unwrap();
+        assert_eq!(recovered, message);
+    }
+
+    #[test]
+    fn encrypts_empty_message() {
+        let (_secret, encryptor) = setup();
+
+        let output = encryptor.encrypt_with_salt(Vec::new(), Fr::from(5u64)).unwrap();
+
+        assert!(output.ciphertext.is_empty());
+        assert_eq!(output.w, blake3::hash(&[]));
+    }
+
+    #[test]
+    fn encrypt_uses_a_fresh_random_salt_each_call() {
+        let (_secret, encryptor) = setup();
+        let mut rng = test_rng();
+        let message = b"anti-mev payload".to_vec();
+
+        let a = encryptor.encrypt(message.clone(), &mut rng).unwrap();
+        let b = encryptor.encrypt(message, &mut rng).unwrap();
+
+        // Independent random salts must yield different `U` values.
+        assert_ne!(a.u, b.u);
+    }
 }
