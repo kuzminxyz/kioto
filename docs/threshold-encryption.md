@@ -1,6 +1,6 @@
-# Threshold encryption with `yonago`
+# Threshold encryption with `shinobi`
 
-`yonago` provides an algorithm for _threshold_ en-/decryption scheme. This can be useful for POA blockchain network for implementing, for example, anti MEV transactions.
+`shinobi` provides an algorithm for _threshold_ en-/decryption scheme. This can be useful for POA blockchain network for implementing, for example, anti MEV transactions.
 
 Provided threshold encryption scheme works on every curve support pairing operation: $E: G1 * G2 \rightarrow GT$.
 
