@@ -17,7 +17,7 @@ pub struct Scheme<F: Field> {
     /// One share per participant, evaluated at `x = 1..=participants`.
     pub shares: Vec<Share<F>>,
     /// Minimum number of distinct shares required to reconstruct [`Self::secret`].
-    threshold: NonZeroUsize,
+    pub threshold: NonZeroUsize,
 }
 
 /// A single participant's share: the point `(x, y)` where `y = f(x)`.
