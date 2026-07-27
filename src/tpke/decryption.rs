@@ -8,6 +8,7 @@ use ark_ec::{
     CurveGroup,
     hashing::{HashToCurve, HashToCurveError},
 };
+use ark_serialize::SerializationError;
 use ark_ff::Field;
 
 use super::DOMAIN;
@@ -15,7 +16,7 @@ use crate::{
     Share,
     tpke::{
         EncryptionOutput, PairingExt,
-        encryption::{XorError, xor_message},
+        encryption::{ xor_message},
     },
 };
 
@@ -57,8 +58,8 @@ impl<F: Field> DecryptionContext<F> {
 }
 
 /// Publicly distributed decryption share.
-/// 
-/// Decryption share formula: `D = U * L_i`, 
+///
+/// Decryption share formula: `D = U * L_i`,
 /// where `L_i` is a lagrange coefficient evaluated at `0`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecryptionShare<G: CurveGroup>(pub G);
@@ -82,7 +83,7 @@ impl<CRV: PairingExt> Decryptor<CRV> {
                 threshold: self.threshold.get(),
             });
         }
-        
+
         let h = CRV::MapToG1Hasher::new(DOMAIN.as_bytes())?.hash(encrypted.w.as_slice())?;
         let c = shares.iter().map(|share| share.0).sum::<CRV::G2>();
         let symmetric_key = CRV::pairing(h, c.into_affine());
@@ -90,7 +91,7 @@ impl<CRV: PairingExt> Decryptor<CRV> {
         let mut message = encrypted.ciphertext.clone();
         xor_message(&mut message, &symmetric_key)?;
         if blake3::hash(&message) != encrypted.w {
-            return Err(Error::)
+            todo!()
         }
         Ok(())
     }
