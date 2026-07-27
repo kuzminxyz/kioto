@@ -9,5 +9,14 @@ ark-std = "0.6.0"
 ark-ff = "0.6.0"
 ark-poly = "0.6.0"
 ark-bls12-381 = "0.6.0"
+ark-ec = "0.6.0"
+ark-serialize = "0.6.0"
 
 thiserror = "2.0.18"
+
+# hash functions
+blake3 = "1.8.5"
+
+[dev-dependencies]
+# SHA-256 digest used to instantiate the BLS12-381 hash-to-curve for tests.
+sha2 = "0.10"
