@@ -118,28 +118,38 @@ impl<F: Field> Scheme<F> {
             });
         }
 
-        // Distinct x-coordinates are required: a repeated `x` yields a zero denominator
-        // (`x_m - x_j == 0`) during interpolation, which would panic on inversion.
-        for (j, Share { x: x_j, .. }) in shares.iter().enumerate() {
-            if shares[j + 1..].iter().any(|Share { x: x_m, .. }| x_m == x_j) {
-                return Err(Error::DuplicateShares);
-            }
-        }
-
-        // secret = f(0) = Σ_j y_j · Π_{m≠j} x_m / (x_m - x_j), the Lagrange basis at x = 0.
-        let mut secret = F::ZERO;
-        shares.iter().enumerate().for_each(|(j, Share { x: x_j, y: y_j })| {
-            let mut basis = F::ONE;
-            shares.iter().enumerate().for_each(|(m, Share { x: x_m, .. })| {
-                if m != j {
-                    basis *= *x_m / (*x_m - *x_j);
-                }
-            });
-            secret += *y_j * basis;
-        });
+        let xs = shares.iter().map(|s| s.x).collect::<Vec<_>>();
+        let secret = lagrange_at_zero(&xs)?
+            .into_iter()
+            .zip(shares)
+            .map(|(lambda, Share { y, .. })| lambda * y)
+            .sum();
 
         Ok(secret)
     }
+}
+
+/// Lagrange basis coefficients at `x = 0`: `λ_j = Π_{m≠j} x_m / (x_m - x_j)`.
+///
+/// Fails on duplicate x-coordinates, which would yield a zero denominator.
+pub fn lagrange_at_zero<F: Field>(xs: &[F]) -> Result<Vec<F>, Error> {
+    for (j, x_j) in xs.iter().enumerate() {
+        if xs[j + 1..].contains(x_j) {
+            return Err(Error::DuplicateShares);
+        }
+    }
+
+    Ok(xs
+        .iter()
+        .enumerate()
+        .map(|(j, x_j)| {
+            xs.iter()
+                .enumerate()
+                .filter(|(m, _)| *m != j)
+                .map(|(_, x_m)| *x_m / (*x_m - *x_j))
+                .product()
+        })
+        .collect())
 }
 
 #[cfg(test)]
