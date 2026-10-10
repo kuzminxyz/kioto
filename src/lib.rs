@@ -1,3 +1,5 @@
+#[cfg(feature = "serde")]
+mod ark_hex;
 mod shamir;
 pub mod threshold;
 

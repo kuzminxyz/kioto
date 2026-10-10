@@ -39,12 +39,16 @@ impl HashToG1 for Bls12_381 {
 
 /// Encrypted message `{E, W, U}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(bound = ""))]
 pub struct Ciphertext<E: Pairing> {
     /// `E = M ⊕ KDF(K)`.
+    #[cfg_attr(feature = "serde", serde(with = "const_hex"))]
     pub e: Vec<u8>,
     /// `W = sha256(M)`.
+    #[cfg_attr(feature = "serde", serde(with = "const_hex"))]
     pub w: [u8; 32],
     /// `U = r · g2`.
+    #[cfg_attr(feature = "serde", serde(with = "crate::ark_hex"))]
     pub u: E::G2Affine,
 }
 
@@ -224,6 +228,19 @@ mod tests {
         shares[0].d = (shares[0].d + shares[1].d).into_affine();
         let c = combine(&shares, scheme.threshold).unwrap();
         assert!(matches!(decrypt(&ct, &c), Err(Error::HashMismatch)));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn ciphertext_json_roundtrip() {
+        let (_, pk) = setup();
+        let ct = encrypt::<E, _>(&pk, b"hello", &mut test_rng());
+        let json = serde_json::to_value(&ct).unwrap();
+        assert_eq!(json["w"], const_hex::encode_prefixed(ct.w));
+        assert_eq!(serde_json::from_value::<Ciphertext<E>>(json).unwrap(), ct);
+
+        let bad = serde_json::json!({ "e": "00", "w": const_hex::encode([0u8; 32]), "u": "ff" });
+        assert!(serde_json::from_value::<Ciphertext<E>>(bad).is_err());
     }
 
     #[test]

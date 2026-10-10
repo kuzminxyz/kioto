@@ -15,3 +15,12 @@ ark-serialize = "0.6.0"
 sha2 = "0.10"
 
 thiserror = "2.0.18"
+
+serde = { version = "1", features = ["derive"], optional = true }
+const-hex = { version = "1.19", features = ["serde"], optional = true }
+
+[features]
+serde = ["dep:serde", "dep:const-hex"]
+
+[dev-dependencies]
+serde_json = "1"
