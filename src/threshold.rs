@@ -121,19 +121,42 @@ pub fn verify_combined<E: Pairing>(pk_g1: &E::G1Affine, u: &E::G2Affine, c: &E::
     pairing_eq::<E>(pk_g1, u, c)
 }
 
+/// Lagrange coefficients at zero precomputed for a fixed set of share indices, so that many
+/// ciphertexts can be combined from the same participants without recomputing them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Combiner<E: Pairing> {
+    lambdas: Vec<E::ScalarField>,
+}
+
+impl<E: Pairing> Combiner<E> {
+    /// Uses the first `threshold` of `xs`.
+    pub fn new(xs: &[E::ScalarField], threshold: NonZeroUsize) -> Result<Self, Error> {
+        if xs.len() < threshold.get() {
+            return Err(shamir::Error::InsufficientShares { shares: xs.len(), threshold }.into());
+        }
+        Ok(Self { lambdas: lagrange_at_zero(&xs[..threshold.get()])? })
+    }
+
+    /// Computes `C = Σ λ_i · D_i` from shares `ds` given in the same order as `xs`.
+    pub fn combine(&self, ds: &[E::G2Affine]) -> Result<E::G2Affine, Error> {
+        let need = self.lambdas.len();
+        if ds.len() < need {
+            let threshold = NonZeroUsize::new(need).expect("at least one coefficient");
+            return Err(shamir::Error::InsufficientShares { shares: ds.len(), threshold }.into());
+        }
+        Ok(E::G2::msm_unchecked(&ds[..need], &self.lambdas).into_affine())
+    }
+}
+
 /// Combines at least `threshold` shares into `C = Σ λ_i · D_i = r · s · g2`.
+/// For many ciphertexts with the same participants prefer [`Combiner`].
 pub fn combine<E: Pairing>(
     shares: &[DecryptionShare<E>],
     threshold: NonZeroUsize,
 ) -> Result<E::G2Affine, Error> {
-    if shares.len() < threshold.get() {
-        return Err(shamir::Error::InsufficientShares { shares: shares.len(), threshold }.into());
-    }
-    let shares = &shares[..threshold.get()];
     let xs = shares.iter().map(|s| s.x).collect::<Vec<_>>();
-    let lambdas = lagrange_at_zero(&xs)?;
     let ds = shares.iter().map(|s| s.d).collect::<Vec<_>>();
-    Ok(E::G2::msm_unchecked(&ds, &lambdas).into_affine())
+    Combiner::<E>::new(&xs, threshold)?.combine(&ds)
 }
 
 /// Decrypts `ct` with the combined key material `c` and checks `hash(M) == W`.
@@ -205,6 +228,21 @@ mod tests {
         let c = combine(&shares, scheme.threshold).unwrap();
         assert!(verify_combined::<E>(&public_key_g1::<E>(scheme.secret), &ct.u, &c));
         assert_eq!(decrypt(&ct, &c).unwrap(), msg);
+    }
+
+    #[test]
+    fn combiner_reused_across_ciphertexts() {
+        let (scheme, pk) = setup();
+        let parties = [&scheme.shares[3], &scheme.shares[0], &scheme.shares[4]];
+        let xs = parties.iter().map(|s| s.x).collect::<Vec<_>>();
+        let combiner = Combiner::<E>::new(&xs, scheme.threshold).unwrap();
+
+        for msg in [&b"first"[..], b"second", b"third"] {
+            let ct = encrypt::<E, _>(&pk, msg, &mut test_rng());
+            let ds = parties.iter().map(|s| decryption_share::<E>(s, &ct.u).d).collect::<Vec<_>>();
+            assert_eq!(decrypt(&ct, &combiner.combine(&ds).unwrap()).unwrap(), msg);
+        }
+        assert!(combiner.combine(&[]).is_err());
     }
 
     #[test]
